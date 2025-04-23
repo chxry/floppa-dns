@@ -1,8 +1,9 @@
+mod config;
+mod web;
+
 use std::time::Duration;
-use std::net::{SocketAddr, Ipv4Addr};
-use std::path::Path;
-use std::fmt::Debug;
-use tokio::{io, fs};
+use std::net::Ipv4Addr;
+use tokio::io;
 use tokio::net::{UdpSocket, TcpListener};
 use hickory_server::server::{ServerFuture, RequestHandler, Request, ResponseHandler, ResponseInfo};
 use hickory_server::authority::MessageResponseBuilder;
@@ -10,29 +11,24 @@ use hickory_server::proto::op::{Header, ResponseCode, OpCode, MessageType};
 use hickory_server::proto::rr::{Record, RecordData, rdata};
 use axum::Router;
 use axum::routing::get;
-use redis::AsyncCommands;
-use redis::aio::MultiplexedConnection;
+use tower_http::services::ServeDir;
+use sqlx::PgPool;
 use tracing::info;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::filter::LevelFilter;
-use serde::{Serialize, Deserialize};
+use crate::config::Config;
+use crate::web::{home, notfound};
 
 #[tokio::main]
 async fn main() -> Result<(), io::Error> {
   tracing_subscriber::registry()
-    .with(LevelFilter::INFO)
+    .with(LevelFilter::DEBUG)
     .with(tracing_subscriber::fmt::layer())
     .init();
 
   let config = Config::load("config.toml").await?;
-
-  let redis_client = redis::Client::open(&*config.redis_url).unwrap();
-  let redis_con = redis_client
-    .get_multiplexed_async_connection()
-    .await
-    .unwrap();
-
-  let state = State { config, redis_con };
+  let pg_pool = PgPool::connect(&config.db_url).await.unwrap();
+  let state = State { config, pg_pool };
 
   let mut server = ServerFuture::new(DnsHandler {
     state: state.clone(),
@@ -44,7 +40,10 @@ async fn main() -> Result<(), io::Error> {
   );
   info!("dns listening on {}", state.config.dns_listen);
 
-  let app = Router::new().route("/", get("HELLO FLOPPA"));
+  let app = Router::new()
+    .route("/", get(home))
+    .nest_service("/static", ServeDir::new("static"))
+    .fallback(notfound);
   let http_listener = TcpListener::bind(state.config.http_listen).await?;
   info!("http listening on {}", state.config.http_listen);
   axum::serve(http_listener, app).await
@@ -53,61 +52,17 @@ async fn main() -> Result<(), io::Error> {
 #[derive(Clone)]
 struct State {
   config: Config,
-  redis_con: MultiplexedConnection,
+  pg_pool: PgPool,
 }
 
 impl State {
-  async fn get_domain(&self, domain: &str) -> Option<String> {
-    self
-      .redis_con
-      .clone()
-      .get(format!("domains:{}", domain))
+  async fn get_domain(&self, domain: &str) -> Option<Ipv4Addr> {
+    let rec: Option<(String,)> = sqlx::query_as("SELECT ip FROM domains WHERE name = $1 LIMIT 1")
+      .bind(domain)
+      .fetch_optional(&self.pg_pool)
       .await
-      .unwrap()
-  }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(default)]
-struct Config {
-  dns_listen: SocketAddr,
-  dns_zone: String,
-  self_addr: Ipv4Addr,
-  http_listen: SocketAddr,
-  redis_url: String,
-}
-
-impl Default for Config {
-  fn default() -> Self {
-    Self {
-      dns_listen: ([0, 0, 0, 0], 5353).into(),
-      dns_zone: "example.com.".to_string(),
-      self_addr: [127, 0, 0, 1].into(),
-      http_listen: ([0, 0, 0, 0], 3000).into(),
-      redis_url: "redis://127.0.0.1/".to_string(),
-    }
-  }
-}
-
-impl Config {
-  pub async fn load<P: AsRef<Path> + Debug>(file: P) -> Result<Self, io::Error> {
-    let config = match fs::read_to_string(&file).await {
-      Ok(contents) => toml::from_str(&contents).map_err(io::Error::other)?,
-      Err(err) => match err.kind() {
-        io::ErrorKind::NotFound => {
-          let default_config = Config::default();
-          info!("creating default config {:?}", file);
-          fs::write(
-            &file,
-            toml::to_string_pretty(&default_config).map_err(io::Error::other)?,
-          )
-          .await?;
-          default_config
-        }
-        _ => return Err(err),
-      },
-    };
-    Ok(config)
+      .unwrap();
+    rec.and_then(|(ip_str,)| ip_str.parse().ok())
   }
 }
 
@@ -132,10 +87,9 @@ impl RequestHandler for DnsHandler {
             .to_string()
             .strip_suffix(&self.state.config.dns_zone)
           {
-            let domain = &domain[..domain.len() - 1];
-            if !domain.is_empty() {
-              if let Some(ip_str) = self.state.get_domain(domain).await {
-                ip = ip_str.parse().unwrap();
+            if domain.len() > 1 {
+              if let Some(i) = self.state.get_domain(&domain[..domain.len() - 1]).await {
+                ip = i;
               }
             }
           }
