@@ -1,5 +1,5 @@
 use std::time::Duration;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, Ipv4Addr};
 use std::path::Path;
 use std::fmt::Debug;
 use tokio::{io, fs};
@@ -8,6 +8,10 @@ use hickory_server::server::{ServerFuture, RequestHandler, Request, ResponseHand
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_server::proto::op::{Header, ResponseCode, OpCode, MessageType};
 use hickory_server::proto::rr::{Record, RecordData, rdata};
+use axum::Router;
+use axum::routing::get;
+use redis::AsyncCommands;
+use redis::aio::MultiplexedConnection;
 use tracing::info;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::filter::LevelFilter;
@@ -23,22 +27,44 @@ async fn main() -> Result<(), io::Error> {
   let config = Config::load("config.toml").await?;
 
   let redis_client = redis::Client::open(&*config.redis_url).unwrap();
-  let redis_con = redis_client.get_connection().unwrap();
+  let redis_con = redis_client
+    .get_multiplexed_async_connection()
+    .await
+    .unwrap();
+
+  let state = State { config, redis_con };
 
   let mut server = ServerFuture::new(DnsHandler {
-    config: config.clone(),
+    state: state.clone(),
   });
-
-  server.register_socket(UdpSocket::bind(config.dns_listen).await?);
-  info!("udp listening on {:?}", config.dns_listen);
-
+  server.register_socket(UdpSocket::bind(state.config.dns_listen).await?);
   server.register_listener(
-    TcpListener::bind(config.dns_listen).await?,
+    TcpListener::bind(state.config.dns_listen).await?,
     Duration::from_secs(5),
   );
-  info!("tcp listening on {:?}", config.dns_listen);
+  info!("dns listening on {}", state.config.dns_listen);
 
-  std::future::pending().await
+  let app = Router::new().route("/", get("HELLO FLOPPA"));
+  let http_listener = TcpListener::bind(state.config.http_listen).await?;
+  info!("http listening on {}", state.config.http_listen);
+  axum::serve(http_listener, app).await
+}
+
+#[derive(Clone)]
+struct State {
+  config: Config,
+  redis_con: MultiplexedConnection,
+}
+
+impl State {
+  async fn get_domain(&self, domain: &str) -> Option<String> {
+    self
+      .redis_con
+      .clone()
+      .get(format!("domains:{}", domain))
+      .await
+      .unwrap()
+  }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -46,6 +72,7 @@ async fn main() -> Result<(), io::Error> {
 struct Config {
   dns_listen: SocketAddr,
   dns_zone: String,
+  self_addr: Ipv4Addr,
   http_listen: SocketAddr,
   redis_url: String,
 }
@@ -54,7 +81,8 @@ impl Default for Config {
   fn default() -> Self {
     Self {
       dns_listen: ([0, 0, 0, 0], 5353).into(),
-      dns_zone: "example.com".to_string(),
+      dns_zone: "example.com.".to_string(),
+      self_addr: [127, 0, 0, 1].into(),
       http_listen: ([0, 0, 0, 0], 3000).into(),
       redis_url: "redis://127.0.0.1/".to_string(),
     }
@@ -84,7 +112,7 @@ impl Config {
 }
 
 struct DnsHandler {
-  config: Config,
+  state: State,
 }
 
 #[async_trait::async_trait]
@@ -92,67 +120,49 @@ impl RequestHandler for DnsHandler {
   async fn handle_request<R: ResponseHandler>(
     &self,
     request: &Request,
-    response_handle: R,
+    mut response_handle: R,
   ) -> ResponseInfo {
     if request.message_type() == MessageType::Query && request.op_code() == OpCode::Query {
       match request.request_info() {
-        Ok(info) => match info
-          .query
-          .name()
-          .to_string()
-          .strip_suffix(&self.config.dns_zone)
-        {
-          Some(sub) if !sub.is_empty() => {
-            tracing::info!("handle {:?}", &sub[..sub.len() - 1]);
-            send_record(
-              response_handle,
-              request,
-              Record::from_rdata(
+        Ok(info) => {
+          let mut ip = self.state.config.self_addr;
+          if let Some(domain) = info
+            .query
+            .name()
+            .to_string()
+            .strip_suffix(&self.state.config.dns_zone)
+          {
+            let domain = &domain[..domain.len() - 1];
+            if !domain.is_empty() {
+              if let Some(ip_str) = self.state.get_domain(domain).await {
+                ip = ip_str.parse().unwrap();
+              }
+            }
+          }
+
+          let mut header = Header::response_from_request(request.header());
+          header.set_authoritative(true);
+          response_handle
+            .send_response(MessageResponseBuilder::from_message_request(request).build(
+              header,
+              [&Record::from_rdata(
                 info.query.name().into(),
                 300,
-                rdata::A::new(4, 5, 6, 7).into_rdata(),
-              ),
-            )
+                rdata::A(ip).into_rdata(),
+              )],
+              [],
+              [],
+              [],
+            ))
             .await
-          }
-          _ => {
-            send_record(
-              response_handle,
-              request,
-              Record::from_rdata(
-                info.query.name().into(),
-                300,
-                rdata::A::new(1, 2, 3, 4).into_rdata(),
-              ),
-            )
-            .await
-          }
-        },
+            .unwrap()
+        }
         Err(_) => send_error(response_handle, request, ResponseCode::FormErr).await,
       }
     } else {
       send_error(response_handle, request, ResponseCode::NotImp).await
     }
   }
-}
-
-async fn send_record<R: ResponseHandler>(
-  mut response_handle: R,
-  request: &Request,
-  record: Record,
-) -> ResponseInfo {
-  let mut header = Header::response_from_request(request.header());
-  header.set_authoritative(true);
-  response_handle
-    .send_response(MessageResponseBuilder::from_message_request(request).build(
-      header,
-      [&record],
-      [],
-      [],
-      [],
-    ))
-    .await
-    .unwrap()
 }
 
 async fn send_error<R: ResponseHandler>(
