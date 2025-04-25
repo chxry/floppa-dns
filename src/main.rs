@@ -1,5 +1,4 @@
 mod config;
-mod web;
 
 use std::time::Duration;
 use std::net::IpAddr;
@@ -10,9 +9,9 @@ use hickory_server::authority::MessageResponseBuilder;
 use hickory_server::proto::op::{Header, ResponseCode, OpCode, MessageType};
 use hickory_server::proto::rr::{Record, RecordData, rdata};
 use axum::Router;
-use axum::routing::get;
+use axum::routing::post;
 use axum::extract::State;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use sqlx::PgPool;
 use argon2::Argon2;
 use argon2::password_hash::{SaltString, PasswordHasher};
@@ -21,7 +20,6 @@ use tracing::info;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::filter::LevelFilter;
 use crate::config::Config;
-use crate::web::{home, login, notfound};
 
 #[tokio::main]
 async fn main() -> Result<(), io::Error> {
@@ -45,11 +43,8 @@ async fn main() -> Result<(), io::Error> {
   info!("dns listening on {}", state.config.dns_listen);
 
   let app = Router::new()
-    .route("/", get(home))
-    .route("/login", get(login))
-    .route("/test", get(test))
-    .nest_service("/static", ServeDir::new("static"))
-    .fallback(notfound)
+    .route("/test", post(test))
+    .fallback_service(ServeDir::new("web/dist/").fallback(ServeFile::new("web/dist/index.html")))
     .with_state(state.clone());
   let http_listener = TcpListener::bind(state.config.http_listen).await?;
   info!("http listening on {}", state.config.http_listen);
