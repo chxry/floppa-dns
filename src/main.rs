@@ -2,7 +2,7 @@ mod config;
 mod web;
 
 use std::time::Duration;
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use tokio::io;
 use tokio::net::{UdpSocket, TcpListener};
 use hickory_server::server::{ServerFuture, RequestHandler, Request, ResponseHandler, ResponseInfo};
@@ -11,13 +11,17 @@ use hickory_server::proto::op::{Header, ResponseCode, OpCode, MessageType};
 use hickory_server::proto::rr::{Record, RecordData, rdata};
 use axum::Router;
 use axum::routing::get;
+use axum::extract::State;
 use tower_http::services::ServeDir;
 use sqlx::PgPool;
+use argon2::Argon2;
+use argon2::password_hash::{SaltString, PasswordHasher};
+use argon2::password_hash::rand_core::OsRng;
 use tracing::info;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::filter::LevelFilter;
 use crate::config::Config;
-use crate::web::{home, notfound};
+use crate::web::{home, login, notfound};
 
 #[tokio::main]
 async fn main() -> Result<(), io::Error> {
@@ -28,7 +32,7 @@ async fn main() -> Result<(), io::Error> {
 
   let config = Config::load("config.toml").await?;
   let pg_pool = PgPool::connect(&config.db_url).await.unwrap();
-  let state = State { config, pg_pool };
+  let state = AppState { config, pg_pool };
 
   let mut server = ServerFuture::new(DnsHandler {
     state: state.clone(),
@@ -42,32 +46,64 @@ async fn main() -> Result<(), io::Error> {
 
   let app = Router::new()
     .route("/", get(home))
+    .route("/login", get(login))
+    .route("/test", get(test))
     .nest_service("/static", ServeDir::new("static"))
-    .fallback(notfound);
+    .fallback(notfound)
+    .with_state(state.clone());
   let http_listener = TcpListener::bind(state.config.http_listen).await?;
   info!("http listening on {}", state.config.http_listen);
   axum::serve(http_listener, app).await
 }
 
 #[derive(Clone)]
-struct State {
+struct AppState {
   config: Config,
   pg_pool: PgPool,
 }
 
-impl State {
-  async fn get_domain(&self, domain: &str) -> Option<Ipv4Addr> {
-    let rec: Option<(String,)> = sqlx::query_as("SELECT ip FROM domains WHERE name = $1 LIMIT 1")
+impl AppState {
+  async fn get_domain(&self, domain: &str) -> Option<IpAddr> {
+    sqlx::query_as("SELECT ip FROM domains WHERE name = $1 LIMIT 1")
       .bind(domain)
       .fetch_optional(&self.pg_pool)
       .await
+      .unwrap()
+      .map(|x: (IpAddr,)| x.0)
+  }
+
+  async fn create_user(&self, username: &str, password: &str) -> Result<(), ()> {
+    if sqlx::query("SELECT 1 FROM users WHERE username = $1")
+      .bind(username)
+      .fetch_optional(&self.pg_pool)
+      .await
+      .unwrap()
+      .is_some()
+    {
+      return Err(());
+    }
+
+    let pass_hash = Argon2::default()
+      .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
+      .unwrap()
+      .to_string();
+
+    sqlx::query("INSERT INTO users VALUES ($1, $2, CURRENT_TIMESTAMP)")
+      .bind(username)
+      .bind(pass_hash)
+      .execute(&self.pg_pool)
+      .await
       .unwrap();
-    rec.and_then(|(ip_str,)| ip_str.parse().ok())
+    Ok(())
   }
 }
 
+async fn test(State(state): State<AppState>) {
+  state.create_user("floppa", "files").await.unwrap();
+}
+
 struct DnsHandler {
-  state: State,
+  state: AppState,
 }
 
 #[async_trait::async_trait]
@@ -102,7 +138,10 @@ impl RequestHandler for DnsHandler {
               [&Record::from_rdata(
                 info.query.name().into(),
                 300,
-                rdata::A(ip).into_rdata(),
+                match ip {
+                  IpAddr::V4(ip) => rdata::A(ip).into_rdata(),
+                  IpAddr::V6(ip) => rdata::AAAA(ip).into_rdata(),
+                },
               )],
               [],
               [],

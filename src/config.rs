@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, Ipv4Addr};
+use std::net::{SocketAddr, IpAddr};
 use std::path::Path;
 use std::fmt::Debug;
 use tokio::{io, fs};
@@ -9,7 +9,7 @@ use serde::{Serialize, Deserialize};
 pub struct Config {
   pub dns_listen: SocketAddr,
   pub dns_zone: String,
-  pub self_addr: Ipv4Addr,
+  pub self_addr: IpAddr,
   pub http_listen: SocketAddr,
   pub db_url: String,
 }
