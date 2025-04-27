@@ -1,10 +1,13 @@
-import { JSX } from "solid-js";
+import { Link as RouterLink } from "react-router";
 
-const Link = (props: { href: string; children: JSX.Element }) => {
+const Link = (props: { href: string; children: React.ReactNode }) => {
   return (
-    <a class="font-bold text-ctp-lavender underline" href={props.href}>
+    <RouterLink
+      className="font-bold text-ctp-lavender underline"
+      to={props.href}
+    >
       {props.children}
-    </a>
+    </RouterLink>
   );
 };
 

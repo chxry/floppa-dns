@@ -1,17 +1,19 @@
-import { JSX } from "solid-js";
-import { Navigate } from "@solidjs/router";
+import { useContext, ReactNode } from "react";
+import { Navigate } from "react-router";
 
-import { token, user } from "..";
+import { AuthContext } from "..";
 
-const Authenticated = (props: { children: JSX.Element }) => {
-  return token() ? (
-    user() ? (
+const Authenticated = (props: { children: ReactNode }) => {
+  const { user, token } = useContext(AuthContext);
+
+  return token ? (
+    user ? (
       props.children
     ) : (
       <p>loading</p>
     )
   ) : (
-    <Navigate href="/login" />
+    <Navigate to="/login" />
   );
 };
 

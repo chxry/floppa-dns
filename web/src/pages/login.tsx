@@ -1,19 +1,20 @@
-import { createSignal, JSX } from "solid-js";
-import { useNavigate } from "@solidjs/router";
+import { useState, useContext } from "react";
+import { Navigate, useNavigate } from "react-router";
 
-import { token, setToken } from "..";
+import { AuthContext } from "..";
 import { Input, Button, Link } from "../components";
 
 const Login = () => {
+  const { token, setToken, user } = useContext(AuthContext);
   const navigate = useNavigate();
-  const [loading, setLoading] = createSignal(false);
-  const [error, setError] = createSignal<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (token()) {
-    navigate("/");
+  if (token) {
+    return <Navigate to="/dashboard" />;
   }
 
-  const handler: JSX.EventHandler<HTMLFormElement, SubmitEvent> = async (e) => {
+  const handler = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
@@ -45,25 +46,25 @@ const Login = () => {
   };
 
   return (
-    <form class="space-y-2" on:submit={handler}>
-      <h2 class="text-2xl font-bold">Login:</h2>
+    <form className="space-y-2" onSubmit={handler}>
+      <h2 className="text-2xl font-bold">Login:</h2>
       <Input
         type="text"
         placeholder="Username"
         name="username"
         required
         maxlength={64}
-        disabled={loading()}
+        disabled={loading}
       />
       <Input
         type="password"
         placeholder="Password"
         name="password"
         required
-        disabled={loading()}
+        disabled={loading}
       />
-      <Button disabled={loading()}>{loading() ? "Loading" : "Login"}</Button>
-      {error() && <p class="text-ctp-red">{error()}</p>}
+      <Button disabled={loading}>{loading ? "Loading" : "Login"}</Button>
+      {error && <p className="text-ctp-red">{error}</p>}
       <Link href="/create-account">Create an account</Link>
     </form>
   );
