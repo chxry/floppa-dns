@@ -8,3 +8,9 @@ CREATE TABLE users (
     pass_hash TEXT,
     created TIMESTAMP
 );
+
+CREATE TABLE sessions (
+    id UUID PRIMARY KEY,
+    username TEXT REFERENCES users(username),
+    created TIMESTAMP
+);
