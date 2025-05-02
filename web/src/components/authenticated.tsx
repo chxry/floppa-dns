@@ -1,7 +1,7 @@
 import { useContext, ReactNode } from "react";
 import { Navigate } from "react-router";
 
-import { AuthContext } from "..";
+import { AuthContext } from "../auth";
 
 const Authenticated = (props: { children: ReactNode }) => {
   const { user, token } = useContext(AuthContext);

@@ -3,7 +3,6 @@ mod dns;
 mod api;
 
 use std::time::Duration;
-use std::net::IpAddr;
 use tokio::io;
 use tokio::net::{UdpSocket, TcpListener};
 use hickory_server::server::ServerFuture;
@@ -52,18 +51,9 @@ struct AppState {
 }
 
 impl AppState {
-  async fn get_domain(&self, domain: &str) -> Option<IpAddr> {
-    sqlx::query_as("SELECT ip FROM domains WHERE name = $1 LIMIT 1")
-      .bind(domain)
-      .fetch_optional(&self.pg_pool)
-      .await
-      .unwrap()
-      .map(|x: (IpAddr,)| x.0)
-  }
-
   async fn create_session(&self, username: &str) -> Uuid {
     let session_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO sessions VALUES ($1, $2)")
+    sqlx::query("INSERT INTO sessions VALUES ($1, $2, CURRENT_TIMESTAMP)")
       .bind(session_id)
       .bind(username)
       .execute(&self.pg_pool)

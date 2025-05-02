@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, IpAddr};
+use std::net::{SocketAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::fmt::Debug;
 use tokio::{io, fs};
@@ -9,7 +9,8 @@ use serde::{Serialize, Deserialize};
 pub struct Config {
   pub dns_listen: SocketAddr,
   pub dns_zone: String,
-  pub self_addr: IpAddr,
+  pub self_addr_v4: Option<Ipv4Addr>,
+  pub self_addr_v6: Option<Ipv6Addr>,
   pub http_listen: SocketAddr,
   pub db_url: String,
 }
@@ -19,7 +20,8 @@ impl Default for Config {
     Self {
       dns_listen: ([0, 0, 0, 0], 5353).into(),
       dns_zone: "example.com.".to_string(),
-      self_addr: [127, 0, 0, 1].into(),
+      self_addr_v4: Some([127, 0, 0, 1].into()),
+      self_addr_v6: None,
       http_listen: ([0, 0, 0, 0], 3000).into(),
       db_url: "postgresql://localhost/floppa-dns".to_string(),
     }
